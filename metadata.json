@@ -1,0 +1,5 @@
+{
+  "name": "Arabic KYC Smart Extractor",
+  "description": "An intelligent KYC application that uses AI to extract information from Arabic ID cards and passports, even from unclear images. Upload your documents to get a structured summary of your information.",
+  "requestFramePermissions": []
+}
