@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { KycData } from '../types';
 import { PencilIcon, CheckIcon, XMarkIcon } from './icons';
+import { formatYemeniPhoneNumber } from '../utils/phoneFormatter';
 
 interface ExtractionResultProps {
   data: KycData;
@@ -20,6 +21,10 @@ const fieldLabels: Record<keyof KycData, string> = {
   expiryDate: "Expiry Date",
   mrz: "Machine Readable Zone",
   bloodGroup: "Blood Group",
+  phoneNumber: "Phone Number",
+  idFrontImage: "ID Front Image",
+  idBackImage: "ID Back Image",
+  passportImage: "Passport Image",
 };
 
 const formatValue = (key: keyof KycData, value: any): string => {
@@ -132,6 +137,29 @@ const ExtractionResult: React.FC<ExtractionResultProps> = ({ data, onUpdateField
             />
         ))}
       </dl>
+
+      {/* Add a dedicated input for the phone number as it's manually entered */}
+      <div className="mt-6 pt-4 border-t border-gray-600">
+         <h4 className="text-md font-semibold text-gray-300 mb-3">Client Contact Information</h4>
+         <div className="py-3 px-4 grid grid-cols-3 gap-4 bg-gray-700/50 rounded-md items-center">
+            <dt className="text-sm font-medium text-gray-400">{fieldLabels.phoneNumber}</dt>
+            <dd className="text-sm text-white col-span-2 font-mono">
+                <input
+                    type="tel"
+                    placeholder="Enter client phone number"
+                    value={data.phoneNumber || ''}
+                    onChange={(e) => onUpdateField('phoneNumber', e.target.value)}
+                    onBlur={(e) => {
+                        if (e.target.value) {
+                            const formattedNumber = formatYemeniPhoneNumber(e.target.value);
+                            onUpdateField('phoneNumber', formattedNumber);
+                        }
+                    }}
+                    className="w-full bg-gray-900/50 border border-gray-600 focus:border-blue-500 rounded-md px-2 py-1 text-sm font-mono focus:outline-none focus:ring-1 focus:ring-blue-400"
+                />
+            </dd>
+        </div>
+      </div>
     </div>
   );
 };

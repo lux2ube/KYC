@@ -1,0 +1,9 @@
+{
+  "rules": {
+    "records": {
+      ".read": true,
+      ".write": true,
+      ".indexOn": ["nationalId", "passportNumber"]
+    }
+  }
+}

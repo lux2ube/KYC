@@ -19,6 +19,10 @@ const fieldLabels: Record<keyof KycData, string> = {
   expiryDate: "Expiry Date",
   mrz: "Machine Readable Zone",
   bloodGroup: "Blood Group",
+  phoneNumber: "Phone Number",
+  idFrontImage: "ID Front Image",
+  idBackImage: "ID Back Image",
+  passportImage: "Passport Image",
 };
 
 // IMPROVEMENT: Add fieldOrder for consistent display order, matching ExtractionResult.
@@ -27,6 +31,7 @@ const fieldOrder: (keyof KycData)[] = [
   'fullName',
   'nationalId',
   'passportNumber',
+  'phoneNumber',
   'nationality',
   'dateOfBirth',
   'placeOfBirth',
@@ -67,6 +72,31 @@ const RecordItem: React.FC<{ record: SavedKycData }> = ({ record }) => {
       </button>
       {isOpen && (
          <div className="p-4 border-t border-gray-600">
+            {(record.idFrontImage || record.idBackImage || record.passportImage) && (
+              <div className="mb-4">
+                <h4 className="text-base font-semibold text-gray-200 mb-2">Scanned Documents</h4>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  {record.idFrontImage && (
+                    <div>
+                      <p className="text-xs text-gray-400 mb-1">ID Card Front</p>
+                      <img src={record.idFrontImage} alt="ID Card Front" className="rounded-lg w-full object-contain" />
+                    </div>
+                  )}
+                  {record.idBackImage && (
+                    <div>
+                      <p className="text-xs text-gray-400 mb-1">ID Card Back</p>
+                      <img src={record.idBackImage} alt="ID Card Back" className="rounded-lg w-full object-contain" />
+                    </div>
+                  )}
+                  {record.passportImage && (
+                    <div>
+                      <p className="text-xs text-gray-400 mb-1">Passport</p>
+                      <img src={record.passportImage} alt="Passport" className="rounded-lg w-full object-contain" />
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
             <dl className="space-y-2">
                 {/* IMPROVEMENT: Use fieldOrder and formatValue for consistent display. */}
                 {fieldOrder.map((key) => {

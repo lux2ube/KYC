@@ -17,6 +17,10 @@ export interface KycData {
   expiryDate?: string;
   mrz?: string;
   bloodGroup?: string;
+  phoneNumber?: string;
+  idFrontImage?: string;
+  idBackImage?: string;
+  passportImage?: string;
 }
 
 export interface SavedKycData extends KycData {

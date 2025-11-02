@@ -1,40 +1,64 @@
 import React, { useState, useMemo } from 'react';
-import { KycData } from './types';
+import { KycData, DocumentType, SavedKycData } from './types';
 import ImageUploader from './components/ImageUploader';
 import ExtractionResult from './components/ExtractionResult';
 import Spinner from './components/Spinner';
 import PreviousRecords from './components/PreviousRecords';
 import { extractKycData } from './services/geminiService';
-import { saveKycData } from './services/firebaseService';
+import { saveKycData, findRecordByUniqueId, updateKycRecord } from './services/firebaseService';
+import { sendKycDataToTelegram } from './services/telegramService';
 import { IdCardIcon, DatabaseIcon } from './components/icons';
+import DocumentSelector from './components/DocumentSelector';
+import DuplicateRecordView from './components/DuplicateRecordView';
 
 type View = 'extractor' | 'records';
 
+const fileToBase64 = (file: File): Promise<string> => {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.readAsDataURL(file);
+    reader.onload = () => resolve(reader.result as string);
+    reader.onerror = (error) => reject(error);
+  });
+};
+
 const App: React.FC = () => {
   const [view, setView] = useState<View>('extractor');
-  const [image1, setImage1] = useState<File | null>(null);
-  const [image2, setImage2] = useState<File | null>(null);
+  const [docType, setDocType] = useState<DocumentType>(DocumentType.ID_CARD);
+  const [idFrontImage, setIdFrontImage] = useState<File | null>(null);
+  const [idBackImage, setIdBackImage] = useState<File | null>(null);
+  const [passportImage, setPassportImage] = useState<File | null>(null);
   const [extractedData, setExtractedData] = useState<KycData | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState<boolean>(false);
   const [isSaved, setIsSaved] = useState<boolean>(false);
   const [saveError, setSaveError] = useState<string | null>(null);
-
+  const [existingRecord, setExistingRecord] = useState<SavedKycData | null>(null);
+  const [isUpdating, setIsUpdating] = useState<boolean>(false);
 
   const isExtractionDisabled = useMemo(() => {
     if (isLoading) return true;
-    return !image1;
-  }, [isLoading, image1]);
+    if (docType === DocumentType.ID_CARD) {
+        return !idFrontImage; // At least front is required
+    }
+    if (docType === DocumentType.PASSPORT) {
+        return !passportImage;
+    }
+    return true;
+  }, [isLoading, docType, idFrontImage, passportImage]);
 
   const resetFilesAndResult = () => {
-    setImage1(null);
-    setImage2(null);
+    setIdFrontImage(null);
+    setIdBackImage(null);
+    setPassportImage(null);
     setExtractedData(null);
     setError(null);
     setIsSaving(false);
     setIsSaved(false);
     setSaveError(null);
+    setExistingRecord(null);
+    setIsUpdating(false);
   };
   
   const handleReset = () => {
@@ -47,21 +71,41 @@ const App: React.FC = () => {
     setSaveError(null);
     setIsSaved(false);
     setExtractedData(null);
+    setExistingRecord(null);
     setIsLoading(true);
 
-    const filesToProcess: File[] = [];
-    if (image1) filesToProcess.push(image1);
-    if (image2) filesToProcess.push(image2);
-    
-    if (filesToProcess.length === 0) {
-      setError("Please upload at least one document image.");
+    if (docType === DocumentType.ID_CARD && !idFrontImage) {
+      setError("Please upload at least the front of the ID card.");
       setIsLoading(false);
       return;
     }
+    if (docType === DocumentType.PASSPORT && !passportImage) {
+        setError("Please upload the passport image.");
+        setIsLoading(false);
+        return;
+    }
 
     try {
-      const data = await extractKycData(filesToProcess);
-      setExtractedData(data);
+      const data = await extractKycData({
+        docType,
+        idFront: idFrontImage ?? undefined,
+        idBack: idBackImage ?? undefined,
+        passport: passportImage ?? undefined,
+      });
+
+      const dataWithImages: KycData = { ...data };
+      if (idFrontImage) {
+        dataWithImages.idFrontImage = await fileToBase64(idFrontImage);
+      }
+      if (idBackImage) {
+        dataWithImages.idBackImage = await fileToBase64(idBackImage);
+      }
+      if (passportImage) {
+        dataWithImages.passportImage = await fileToBase64(passportImage);
+      }
+      
+      setExtractedData(dataWithImages);
+
     } catch (err: any) {
       setError(err.message || "An unknown error occurred during extraction.");
     } finally {
@@ -74,8 +118,17 @@ const App: React.FC = () => {
     setSaveError(null);
     setIsSaving(true);
     try {
-        await saveKycData(extractedData);
-        setIsSaved(true);
+        const potentialDuplicate = await findRecordByUniqueId(extractedData);
+        if (potentialDuplicate) {
+            setExistingRecord(potentialDuplicate);
+        } else {
+            await saveKycData(extractedData);
+            setIsSaved(true);
+            // Fire-and-forget notification to Telegram
+            sendKycDataToTelegram(extractedData).catch(err => {
+                console.error("Failed to send Telegram notification:", err);
+            });
+        }
     } catch (err: any) {
         setSaveError(err.message || 'An unknown error occurred while saving.');
     } finally {
@@ -83,13 +136,54 @@ const App: React.FC = () => {
     }
   };
 
+  const handleUpdateRecord = async () => {
+    if (!extractedData || !existingRecord) return;
+    setSaveError(null);
+    setIsUpdating(true);
+    try {
+        await updateKycRecord(existingRecord.id, extractedData);
+        alert('Record updated successfully!');
+        
+        // Fire-and-forget notification to Telegram
+        sendKycDataToTelegram(extractedData).catch(err => {
+            console.error("Failed to send Telegram notification:", err);
+        });
+
+        handleReset();
+    } catch (err: any) {
+        setSaveError(err.message || 'An unknown error occurred while updating.');
+    } finally {
+        setIsUpdating(false);
+    }
+  };
+
+  const handleDiscardChanges = () => {
+    // This function is for the duplicate view to discard the new data and reset.
+    resetFilesAndResult();
+  };
+  
+  const handleDiscardExtraction = () => {
+      // This is for discarding the current extraction and starting over from the results page.
+      setExtractedData(null);
+      setExistingRecord(null);
+      setError(null);
+      setIsSaved(false);
+      setSaveError(null);
+  };
+
   const handleUpdateField = (key: keyof KycData, value: string) => {
     setExtractedData(prevData => {
         if (!prevData) return null;
-        // When a field is edited, we reset the "saved" status
         setIsSaved(false); 
         return { ...prevData, [key]: value };
     });
+  };
+
+  const handleDocTypeChange = (newType: DocumentType) => {
+    if (newType !== docType) {
+        resetFilesAndResult();
+    }
+    setDocType(newType);
   };
 
   const NavTab: React.FC<{
@@ -129,15 +223,40 @@ const App: React.FC = () => {
         <div className="p-6 md:p-8 space-y-6">
             {view === 'extractor' && (
                 <>
-                    {!extractedData && !isLoading && (
+                    {!isLoading && !extractedData && (
                     <div className="space-y-6">
                         <div>
-                        <label className="block text-sm font-medium text-gray-300 mb-2">1. Upload Document Image(s)</label>
-                         <p className="text-xs text-gray-500 mb-4">Upload one image for a passport, or two for the front and back of an ID card.</p>
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                            <ImageUploader label="Image 1" file={image1} onFileChange={setImage1} disabled={isLoading} />
-                            <ImageUploader label="Image 2 (Optional)" file={image2} onFileChange={setImage2} disabled={isLoading} />
+                            <label className="block text-sm font-medium text-gray-300 mb-2">1. Select Document Type</label>
+                            <DocumentSelector selectedType={docType} onChange={handleDocTypeChange} disabled={isLoading} />
                         </div>
+
+                        <div>
+                            <label className="block text-sm font-medium text-gray-300 mb-2">2. Upload Document Image(s)</label>
+                            {docType === DocumentType.ID_CARD ? (
+                                <>
+                                    <p className="text-xs text-gray-500 mb-4">Upload the front and back of the ID card. The front is required.</p>
+                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                        <ImageUploader label="ID Card Front" file={idFrontImage} onFileChange={setIdFrontImage} disabled={isLoading} />
+                                        <ImageUploader label="ID Card Back (Optional)" file={idBackImage} onFileChange={setIdBackImage} disabled={isLoading} />
+                                    </div>
+                                </>
+                            ) : (
+                                <>
+                                    <p className="text-xs text-gray-500 mb-4">Upload the main photo page of the passport.</p>
+                                    <div className="max-w-md mx-auto">
+                                        <ImageUploader label="Passport Photo Page" file={passportImage} onFileChange={setPassportImage} disabled={isLoading} />
+                                    </div>
+                                </>
+                            )}
+                        </div>
+                        <div className="pt-4 border-t border-gray-700">
+                           <button
+                                onClick={handleExtract}
+                                disabled={isExtractionDisabled}
+                                className="w-full bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-white font-bold py-3 px-4 rounded-lg transition-colors duration-200 flex items-center justify-center focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-gray-800 focus:ring-blue-500"
+                            >
+                                {isLoading ? <Spinner /> : 'Extract Information'}
+                            </button>
                         </div>
                     </div>
                     )}
@@ -156,50 +275,54 @@ const App: React.FC = () => {
                     </div>
                     )}
 
-                    {extractedData && !isLoading && (
-                    <div>
-                        <ExtractionResult data={extractedData} onUpdateField={handleUpdateField} />
-                    </div>
-                    )}
-
-                    <div className="pt-4 border-t border-gray-700">
-                        {extractedData && !isLoading ? (
-                             <div className="space-y-4">
-                                <div className="grid grid-cols-2 gap-4">
-                                    <button
-                                        onClick={handleSaveRecord}
-                                        disabled={isSaving || isSaved}
-                                        className="bg-green-600 hover:bg-green-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-white font-bold py-3 px-4 rounded-lg transition-colors duration-200 flex items-center justify-center focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-gray-800 focus:ring-green-500"
-                                    >
-                                        {isSaving ? <Spinner className="w-5 h-5"/> : (isSaved ? '✓ Saved' : 'Save Record')}
-                                    </button>
-                                     <button
-                                        onClick={handleExtract}
-                                        className="bg-gray-600 hover:bg-gray-700 text-white font-bold py-3 px-4 rounded-lg transition-colors duration-200 flex items-center justify-center focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-gray-800 focus:ring-gray-500"
-                                    >
-                                        Retry Extraction
-                                    </button>
+                    {!isLoading && extractedData && (
+                        <>
+                            {existingRecord ? (
+                                <DuplicateRecordView 
+                                    newRecord={extractedData}
+                                    existingRecord={existingRecord}
+                                    onUpdate={handleUpdateRecord}
+                                    onDiscard={handleDiscardChanges}
+                                    isUpdating={isUpdating}
+                                />
+                            ) : (
+                                <div>
+                                    <ExtractionResult data={extractedData} onUpdateField={handleUpdateField} />
+                                    <div className="mt-6 pt-6 border-t border-gray-700">
+                                        <div className="space-y-4">
+                                            {isSaved ? (
+                                                 <button
+                                                    onClick={handleReset}
+                                                    className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-4 rounded-lg transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-gray-800 focus:ring-blue-500"
+                                                >
+                                                    Start New Verification
+                                                </button>
+                                            ) : (
+                                                <div className="grid grid-cols-2 gap-4">
+                                                    <button
+                                                        onClick={handleSaveRecord}
+                                                        disabled={isSaving}
+                                                        className="bg-green-600 hover:bg-green-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-white font-bold py-3 px-4 rounded-lg transition-colors duration-200 flex items-center justify-center focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-gray-800 focus:ring-green-500"
+                                                    >
+                                                        {isSaving ? <Spinner className="w-5 h-5"/> : 'Save New Record'}
+                                                    </button>
+                                                    <button
+                                                        onClick={handleDiscardExtraction}
+                                                        className="bg-gray-600 hover:bg-gray-700 text-white font-bold py-3 px-4 rounded-lg transition-colors duration-200 flex items-center justify-center focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-gray-800 focus:ring-gray-500"
+                                                    >
+                                                        Discard
+                                                    </button>
+                                                </div>
+                                            )}
+                                        </div>
+                                    </div>
                                 </div>
-                                <button
-                                    onClick={handleReset}
-                                    className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-4 rounded-lg transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-gray-800 focus:ring-blue-500"
-                                >
-                                    Start New Verification
-                                </button>
-                                 {saveError && (
-                                    <p className="text-red-400 text-sm text-center">Failed to save: {saveError}</p>
-                                 )}
-                            </div>
-                        ) : (
-                            <button
-                                onClick={handleExtract}
-                                disabled={isExtractionDisabled}
-                                className="w-full bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-white font-bold py-3 px-4 rounded-lg transition-colors duration-200 flex items-center justify-center focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-gray-800 focus:ring-blue-500"
-                            >
-                                {isLoading ? <Spinner /> : 'Extract Information'}
-                            </button>
-                        )}
-                    </div>
+                            )}
+                             {saveError && (
+                                <p className="text-red-400 text-sm text-center mt-4">Operation Failed: {saveError}</p>
+                             )}
+                        </>
+                    )}
                 </>
             )}
             {view === 'records' && (
